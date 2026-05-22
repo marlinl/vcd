@@ -1,0 +1,9 @@
+[package]
+name = "vcd"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust CLI for opening Git projects inside local Docker containers for vibe coding workflows."
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]

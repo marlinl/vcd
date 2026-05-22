@@ -1,0 +1,19 @@
+# Optional apt packages only.
+# Use "[x]" to install a package and "[ ]" to skip it.
+#
+# Build with:
+#   docker build -f ~/.config/vcd/Dockerfile ~/.config/vcd
+
+[x] build-essential
+[x] cmake
+[x] libpq-dev
+[x] libssl-dev
+[x] make
+[x] pkg-config
+[x] unzip
+[x] xz-utils
+[x] zip
+
+[ ] postgresql
+[ ] python3-dev
+[ ] ripgrep

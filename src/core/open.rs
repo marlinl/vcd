@@ -1,0 +1,106 @@
+use crate::docker;
+use crate::error::{Result, VcdError};
+use crate::repo;
+
+use super::config;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Editor {
+    name: &'static str,
+    command: &'static str,
+}
+
+impl Editor {
+    fn name(self) -> &'static str {
+        self.name
+    }
+
+    fn command(self) -> &'static str {
+        self.command
+    }
+}
+
+pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()> {
+    let editor = resolve_editor(editor_name)?;
+    let repo = repo::GitRepo::parse(repo_url)?;
+    let branch = resolve_branch(branch, &repo.mr_iid)?;
+    let config_path = config::default_config_path()?;
+    let config = config::read_config(&config_path)?;
+    let timestamp = docker::timestamp()?;
+    let container =
+        docker::container_name(&config.user_name, editor.name(), &repo.project, &timestamp);
+    docker::ensure_docker_ready()?;
+    docker::ensure_image_exists(&config.container_id)?;
+    docker::ensure_container(&docker::ContainerRequest {
+        name: container.clone(),
+        image: config.container_id.clone(),
+        user: config.user_name.clone(),
+        ssh_key_path: config.ssh_key_path.clone(),
+        proxy_url: config.proxy_url.clone(),
+        no_proxy: config.no_proxy.clone(),
+    })?;
+
+    let open_result = (|| {
+        docker::prepare_repo(&container, &config.user_name, &repo, &branch)?;
+        docker::open_editor(
+            &container,
+            &config.user_name,
+            editor.command(),
+            &repo.project,
+        )
+    })();
+    let cleanup_result = docker::remove_container(&container);
+
+    match (open_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(err)) => Err(err),
+        (Err(err), Err(cleanup_err)) => {
+            eprintln!("{cleanup_err}");
+            Err(err)
+        }
+    }
+}
+
+fn resolve_editor(name: &str) -> Result<Editor> {
+    match name {
+        "codex" => Ok(Editor {
+            name: "codex",
+            command: "codex",
+        }),
+        "claude" => Ok(Editor {
+            name: "claude",
+            command: "claude",
+        }),
+        _ => Err(
+            VcdError::new("编辑器解析失败", format!("unsupported editor '{name}'"))
+                .with_hint("当前只支持: vcd <codex|claude> <git-url> [branch]"),
+        ),
+    }
+}
+
+fn resolve_branch(branch: Option<&str>, mr_iid: &Option<String>) -> Result<repo::BranchPlan> {
+    if let Some(name) = branch.map(str::trim).filter(|b| !b.is_empty()) {
+        return repo::BranchPlan::from_optional(Some(name));
+    }
+    match mr_iid {
+        Some(iid) => Ok(repo::BranchPlan::MergeRequest { iid: iid.clone() }),
+        None => repo::BranchPlan::from_optional(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_supported_editors() {
+        assert_eq!(resolve_editor("codex").unwrap().command(), "codex");
+        assert_eq!(resolve_editor("claude").unwrap().command(), "claude");
+    }
+
+    #[test]
+    fn rejects_unsupported_editor() {
+        assert!(resolve_editor("vim").is_err());
+    }
+}
