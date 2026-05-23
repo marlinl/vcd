@@ -45,6 +45,9 @@ vcd init <user>
 
 - User email，必填且必须包含 `@`。
 - SSH 私钥绝对路径，默认值为 `/Users/<user>/.ssh/id_rsa`。
+- GitLab host，可为空，后续打开容器时注入为 `GITLAB_HOST`。
+- GitLab API token，可为空，后续打开容器时注入为 `GITLAB_TOKEN`。
+- GitHub API token，可为空，后续打开容器时注入为 `GH_TOKEN`。
 
 SSH key 必须存在于：
 
@@ -84,6 +87,9 @@ ssh.key_path=/Users/<user>/.ssh/id_rsa
 initialized_at=<timestamp>
 container.docker_build=~/.config/vcd/Dockerfile
 container.id=vcd-<user>:<timestamp>
+token.gitlab-host=<gitlab-host-or-empty>
+token.gitlab=<gitlab-api-token-or-empty>
+token.github=<github-api-token-or-empty>
 ```
 
 并构建本地 Docker image：
@@ -102,7 +108,7 @@ vcd-<user>:<timestamp>
 2. 检查 `~/.config/vcd/config` 是否已有非空 `initialized_at`。
 3. 如果已经初始化，失败并提示使用 `vcd config set <key> <value>`。
 4. 校验 `user`。
-5. 交互式读取 user email 和 SSH key path。
+5. 交互式读取 user email、SSH key path、GitLab host、GitLab API token 和 GitHub API token。
 6. 校验 SSH key path 文件存在。
 7. 生成时间戳：
 

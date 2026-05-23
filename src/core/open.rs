@@ -38,6 +38,9 @@ pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()
         ssh_key_path: config.ssh_key_path.clone(),
         proxy_url: config.proxy_url.clone(),
         no_proxy: config.no_proxy.clone(),
+        token_gitlab_host: config.token_gitlab_host.clone(),
+        token_gitlab: config.token_gitlab.clone(),
+        token_github: config.token_github.clone(),
     })?;
 
     let open_result = (|| {
@@ -47,6 +50,9 @@ pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()
             &config.user_name,
             editor.command(),
             &repo.project,
+            &config.token_gitlab_host,
+            &config.token_gitlab,
+            &config.token_github,
         )
     })();
     let cleanup_result = docker::remove_container(&container);

@@ -99,6 +99,14 @@ container.docker_build=~/.config/vcd/Dockerfile
 container.id=<local-vcd-image-name>
 ```
 
+可选配置：
+
+```text
+token.gitlab-host=<gitlab-host-or-empty>
+token.gitlab=<gitlab-api-token-or-empty>
+token.github=<github-api-token-or-empty>
+```
+
 Docker 必须已安装并可访问。
 
 `container.id` 指向的本地 vcd image 必须存在于本地 Docker images。
@@ -125,6 +133,14 @@ editor 的工作目录是：
 
 ```text
 /home/<user>/<project>
+```
+
+如果配置中存在 token，项目容器会在创建时动态注入：
+
+```text
+GITLAB_HOST=<token.gitlab-host>
+GITLAB_TOKEN=<token.gitlab>
+GH_TOKEN=<token.github>
 ```
 
 选择 `codex` 时执行：

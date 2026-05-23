@@ -31,6 +31,9 @@ pub struct ContainerRequest {
     pub ssh_key_path: String,
     pub proxy_url: String,
     pub no_proxy: String,
+    pub token_gitlab_host: String,
+    pub token_gitlab: String,
+    pub token_github: String,
 }
 
 pub fn default_dockerfile_path() -> Result<PathBuf> {
@@ -408,6 +411,12 @@ pub fn ensure_container(request: &ContainerRequest) -> Result<()> {
                 "config",
             )?;
             inject_proxy_env(&mut args, &request.proxy_url, &request.no_proxy);
+            inject_token_env(
+                &mut args,
+                &request.token_gitlab_host,
+                &request.token_gitlab,
+                &request.token_github,
+            );
             args.extend([
                 request.image.clone(),
                 "sleep".to_string(),
@@ -435,6 +444,23 @@ fn inject_proxy_env(args: &mut Vec<String>, proxy_url: &str, no_proxy: &str) {
     if !no_proxy.is_empty() {
         args.extend(["-e".to_string(), format!("NO_PROXY={no_proxy}")]);
         args.extend(["-e".to_string(), format!("no_proxy={no_proxy}")]);
+    }
+}
+
+fn inject_token_env(
+    args: &mut Vec<String>,
+    token_gitlab_host: &str,
+    token_gitlab: &str,
+    token_github: &str,
+) {
+    if !token_gitlab_host.is_empty() {
+        args.extend(["-e".to_string(), format!("GITLAB_HOST={token_gitlab_host}")]);
+    }
+    if !token_gitlab.is_empty() {
+        args.extend(["-e".to_string(), format!("GITLAB_TOKEN={token_gitlab}")]);
+    }
+    if !token_github.is_empty() {
+        args.extend(["-e".to_string(), format!("GH_TOKEN={token_github}")]);
     }
 }
 
@@ -481,21 +507,25 @@ pub fn prepare_repo(
     checkout_branch(container, &project_path, branch)
 }
 
-pub fn open_editor(container: &str, user: &str, editor: &str, project: &str) -> Result<()> {
+pub fn open_editor(
+    container: &str,
+    user: &str,
+    editor: &str,
+    project: &str,
+    token_gitlab_host: &str,
+    token_gitlab: &str,
+    token_github: &str,
+) -> Result<()> {
     let project_path = project_path(user, project);
-    docker_checked_interactive(
-        &[
-            "exec",
-            "-it",
-            "-w",
-            project_path.as_str(),
-            container,
-            editor,
-            ".",
-        ],
-        "编辑器启动失败",
-        "docker exec failed",
-    )
+    let mut args = vec![
+        "exec".to_string(),
+        "-it".to_string(),
+        "-w".to_string(),
+        project_path,
+    ];
+    inject_token_env(&mut args, token_gitlab_host, token_gitlab, token_github);
+    args.extend([container.to_string(), editor.to_string(), ".".to_string()]);
+    docker_checked_strings_interactive(&args, "编辑器启动失败", "docker exec failed")
 }
 
 fn checkout_branch(container: &str, project_path: &str, branch: &BranchPlan) -> Result<()> {
@@ -811,6 +841,14 @@ fn docker_checked_strings(
     run_docker(args, stage, message, false)
 }
 
+fn docker_checked_strings_interactive(
+    args: &[String],
+    stage: &'static str,
+    message: &'static str,
+) -> Result<()> {
+    run_docker(args, stage, message, true)
+}
+
 fn docker_checked_interactive(
     args: &[&str],
     stage: &'static str,
@@ -903,6 +941,9 @@ mod tests {
                 container_id: "vcd-jack:20260520103000".to_string(),
                 proxy_url: "http://host.docker.internal:1087".to_string(),
                 no_proxy: "localhost,127.0.0.1,::1,host.docker.internal,.local".to_string(),
+                token_gitlab_host: "gitlab.example.com".to_string(),
+                token_gitlab: "glpat-example".to_string(),
+                token_github: "ghp_example".to_string(),
             },
             base_image: "debian:trixie-slim".to_string(),
             proxy_url: "http://host.docker.internal:1087".to_string(),
@@ -949,6 +990,9 @@ mod tests {
                 container_id: "vcd-jack:20260520103000".to_string(),
                 proxy_url: String::new(),
                 no_proxy: String::new(),
+                token_gitlab_host: String::new(),
+                token_gitlab: String::new(),
+                token_github: String::new(),
             },
             base_image: "debian:trixie-slim".to_string(),
             proxy_url: String::new(),
@@ -989,6 +1033,27 @@ mod tests {
     fn skips_proxy_env_when_empty() {
         let mut args = vec!["run".to_string()];
         inject_proxy_env(&mut args, "", "");
+        assert_eq!(args, vec!["run".to_string()]);
+    }
+
+    #[test]
+    fn injects_token_env_vars() {
+        let mut args = vec!["run".to_string()];
+        inject_token_env(
+            &mut args,
+            "gitlab.example.com",
+            "glpat-example",
+            "ghp_example",
+        );
+        assert!(args.contains(&"GITLAB_HOST=gitlab.example.com".to_string()));
+        assert!(args.contains(&"GITLAB_TOKEN=glpat-example".to_string()));
+        assert!(args.contains(&"GH_TOKEN=ghp_example".to_string()));
+    }
+
+    #[test]
+    fn skips_token_env_when_empty() {
+        let mut args = vec!["run".to_string()];
+        inject_token_env(&mut args, "", "", "");
         assert_eq!(args, vec!["run".to_string()]);
     }
 }

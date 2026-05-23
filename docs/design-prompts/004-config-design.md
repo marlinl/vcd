@@ -4,9 +4,9 @@
 
 `vcd config` 是初始化后的配置修改命令。
 
-`vcd init <user>` 只用于首次初始化。如果 `~/.config/vcd/config` 中已经存在非空 `initialized_at`，再次执行 `init` 会失败。后续要修改用户、邮箱、SSH key 路径、Dockerfile 路径或当前容器标识，应使用 `vcd config set`，然后按需要执行 `vcd rebuild`。
+`vcd init <user>` 只用于首次初始化。如果 `~/.config/vcd/config` 中已经存在非空 `initialized_at`，再次执行 `init` 会失败。后续要修改用户、邮箱、SSH key 路径、Dockerfile 路径、当前容器标识或代理配置，应使用 `vcd config set`，然后按需要执行 `vcd rebuild`。
 
-当前只实现 `set` 子命令。
+当前实现 `set` 和 `list` 子命令。
 
 实现上，`src/core/config.rs` 是配置相关用例的统一入口。它同时包含：
 
@@ -14,6 +14,7 @@
 - 默认配置路径解析。
 - 配置文件读写、解析和序列化。
 - `vcd config set` 的字段更新、校验和落盘流程。
+- `vcd config list` 的配置读取和打印流程。
 
 `init`、`rebuild`、`open` 和 Docker 构建逻辑都通过 `core::config` 读取或写入本地配置；项目根目录不再单独维护 `src/config.rs`。
 
@@ -23,6 +24,7 @@
 
 ```bash
 vcd config set <key> <value>
+vcd config list
 ```
 
 示例：
@@ -33,6 +35,12 @@ vcd config set user.email jack@example.com
 vcd config set ssh.key_path /Users/jack/.ssh/id_ed25519
 vcd config set container.docker_build /Users/jack/.config/vcd/Dockerfile
 vcd config set container.id vcd-jack:20260522120000
+vcd config set proxy.url http://host.docker.internal:1087
+vcd config set proxy.no_proxy localhost,127.0.0.1,::1,host.docker.internal,.local
+vcd config set token.gitlab-host gitlab.example.com
+vcd config set token.gitlab glpat-example
+vcd config set token.github ghp_example
+vcd config list
 ```
 
 ### Config Structure
@@ -46,6 +54,11 @@ ssh.key_path=<absolute-ssh-private-key-path>
 initialized_at=<timestamp>
 container.docker_build=<absolute-dockerfile-path>
 container.id=<current-vcd-image-name>
+proxy.url=<proxy-url-or-empty>
+proxy.no_proxy=<no-proxy-domains>
+token.gitlab-host=<gitlab-host-or-empty>
+token.gitlab=<gitlab-api-token-or-empty>
+token.github=<github-api-token-or-empty>
 ```
 
 示例：
@@ -57,6 +70,11 @@ ssh.key_path=/Users/jack/.ssh/id_ed25519
 initialized_at=20260522120000
 container.docker_build=/Users/jack/.config/vcd/Dockerfile
 container.id=vcd-jack:20260522120000
+proxy.url=http://host.docker.internal:1087
+proxy.no_proxy=localhost,127.0.0.1,::1,host.docker.internal,.local
+token.gitlab-host=gitlab.example.com
+token.gitlab=glpat-example
+token.github=ghp_example
 ```
 
 字段语义：
@@ -97,6 +115,35 @@ container.id=vcd-jack:20260522120000
 - `open` 阶段直接使用该值执行 `docker image inspect` 和 `docker run`，不再和 `initialized_at` 拼接。
 - 示例：`vcd-jack:20260522120000`。
 
+`proxy.url`：
+
+- 容器运行时代理地址。
+- 可以为空，空字符串表示不注入代理环境变量。
+- 修改后不需要 rebuild，下次启动项目容器立即生效。
+
+`proxy.no_proxy`：
+
+- 不走代理的 host/domain 列表。
+- 修改后不需要 rebuild，下次启动项目容器立即生效。
+
+`token.gitlab-host`：
+
+- GitLab host，例如 `gitlab.com` 或私有 GitLab 域名。
+- 可以为空。
+- 修改后不需要 rebuild，下次启动项目容器时动态注入为 `GITLAB_HOST`。
+
+`token.gitlab`：
+
+- GitLab API token。
+- 可以为空。
+- 修改后不需要 rebuild，下次启动项目容器时动态注入为 `GITLAB_TOKEN`。
+
+`token.github`：
+
+- GitHub API token。
+- 可以为空。
+- 修改后不需要 rebuild，下次启动项目容器时动态注入为 `GH_TOKEN`。
+
 ### Requirements
 
 执行 `config set` 前必须已经存在有效配置：
@@ -116,6 +163,16 @@ container.docker_build
 container.id
 ```
 
+可选字段缺失时使用默认值：
+
+```text
+proxy.url
+proxy.no_proxy
+token.gitlab-host
+token.gitlab
+token.github
+```
+
 旧格式兼容读取：
 
 - `user` 会映射为 `user.name`。
@@ -127,6 +184,8 @@ container.id
 新写入的 config 必须只使用点分 key。
 
 ## 3. Core Logic
+
+### config set
 
 1. 解析 CLI 参数：
 
@@ -150,11 +209,47 @@ container.id
    - `ssh.key_path` 是绝对路径，并且宿主机 SSH key 存在。
    - `container.docker_build` 非空。
    - `container.id` 非空。
+   - `proxy.url` 允许为空。
+   - `proxy.no_proxy` 允许为空。
+   - `token.gitlab-host` 允许为空。
+   - `token.gitlab` 允许为空。
+   - `token.github` 允许为空。
 5. 重写 `~/.config/vcd/config`。
 6. 输出更新成功，并提示执行：
 
    ```bash
    vcd rebuild
+   ```
+
+### config list
+
+1. 解析 CLI 参数：
+
+   ```text
+   command = config
+   subcommand = list
+   ```
+
+2. 读取默认 config：
+
+   ```text
+   ~/.config/vcd/config
+   ```
+
+3. 按当前新格式序列化并打印全部配置：
+
+   ```text
+   user.name=<user-name>
+   user.email=<email>
+   ssh.key_path=<absolute-ssh-private-key-path>
+   initialized_at=<timestamp>
+   container.docker_build=<absolute-dockerfile-path>
+   container.id=<current-vcd-image-name>
+   proxy.url=<proxy-url-or-empty>
+   proxy.no_proxy=<no-proxy-domains>
+   token.gitlab-host=<gitlab-host-or-empty>
+   token.gitlab=<gitlab-api-token-or-empty>
+   token.github=<github-api-token-or-empty>
    ```
 
 ## 4. Corners
@@ -177,6 +272,11 @@ user.email
 ssh.key_path
 container.docker_build
 container.id
+proxy.url
+proxy.no_proxy
+token.gitlab-host
+token.gitlab
+token.github
 ```
 
 ### Invalid SSH Key

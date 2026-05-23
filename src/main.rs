@@ -14,6 +14,8 @@ Usage:
   vcd init <user>
   vcd rebuild [user]
   vcd config set <key> <value>
+  vcd config list
+  vcd doctor
   vcd <codex|claude> <git-url> [branch]
   vcd --help
   vcd --version
@@ -22,6 +24,8 @@ Commands:
   init <user>    Configure vcd user, Git/SSH settings, and build a local base image.
   rebuild        Rebuild the local base image and update the current config.
   config set     Update an existing vcd config value.
+  config list    Print the current vcd config.
+  doctor         Check OrbStack, Docker CLI, and vcd config.
   codex          Open a Git project with codex in the local vcd Docker container.
   claude         Open a Git project with claude in the local vcd Docker container.
 ";
@@ -38,6 +42,8 @@ enum Command {
         key: String,
         value: String,
     },
+    ConfigList,
+    Doctor,
     Open {
         editor: String,
         repo_url: String,
@@ -67,6 +73,8 @@ fn run() -> Result<()> {
         Command::Init { user } => core::init::run(&user),
         Command::Rebuild { user } => core::rebuild::run(user.as_deref()),
         Command::ConfigSet { key, value } => core::config::set(&key, &value),
+        Command::ConfigList => core::config::list(),
+        Command::Doctor => core::doctor::run(),
         Command::Open {
             editor,
             repo_url,
@@ -87,6 +95,7 @@ where
         [flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
         [command, user] if command == "init" => Ok(Command::Init { user: user.clone() }),
         [command] if command == "init" => Err(parse_error("missing user for 'init'")),
+        [command] if command == "doctor" => Ok(Command::Doctor),
         [command] if command == "rebuild" => Ok(Command::Rebuild { user: None }),
         [command, user] if command == "rebuild" => Ok(Command::Rebuild {
             user: Some(user.clone()),
@@ -96,6 +105,9 @@ where
                 key: key.clone(),
                 value: value.clone(),
             })
+        }
+        [command, subcommand] if command == "config" && subcommand == "list" => {
+            Ok(Command::ConfigList)
         }
         [command] if command == "config" => Err(parse_error("missing subcommand for 'config'")),
         [command, subcommand, ..] if command == "config" => Err(parse_error(format!(
@@ -121,7 +133,7 @@ where
 
 fn parse_error(message: impl Into<String>) -> VcdError {
     VcdError::new("参数解析失败", message).with_hint(
-        "当前支持: vcd init <user>、vcd rebuild [user]、vcd config set <key> <value> 或 vcd <codex|claude> <git-url> [branch]",
+        "当前支持: vcd init <user>、vcd rebuild [user]、vcd config set <key> <value>、vcd config list、vcd doctor 或 vcd <codex|claude> <git-url> [branch]",
     )
 }
 
@@ -180,6 +192,18 @@ mod tests {
                 value: "jack".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn parses_config_list() {
+        let command = parse(["config".to_string(), "list".to_string()]).unwrap();
+        assert_eq!(command, Command::ConfigList);
+    }
+
+    #[test]
+    fn parses_doctor() {
+        let command = parse(["doctor".to_string()]).unwrap();
+        assert_eq!(command, Command::Doctor);
     }
 
     #[test]

@@ -56,6 +56,8 @@ RUN printf '%s\n' \
         python3 \
         python3-pip \
         python3-venv \
+        rustc \
+        cargo \
         sudo \
         tzdata \
         vim \

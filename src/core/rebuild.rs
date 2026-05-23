@@ -14,6 +14,9 @@ pub fn run(user: Option<&str>) -> Result<()> {
                 user_name: config.user_name,
                 user_email: config.user_email,
                 ssh_key_path: config.ssh_key_path,
+                token_gitlab_host: config.token_gitlab_host,
+                token_gitlab: config.token_gitlab,
+                token_github: config.token_github,
             }
         }
     };

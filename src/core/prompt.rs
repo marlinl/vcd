@@ -9,6 +9,9 @@ pub struct InitOptions {
     pub user_name: String,
     pub user_email: String,
     pub ssh_key_path: String,
+    pub token_gitlab_host: String,
+    pub token_gitlab: String,
+    pub token_github: String,
 }
 
 pub fn prompt_init_options(user: &str, defaults: Option<&InitOptions>) -> Result<InitOptions> {
@@ -26,10 +29,32 @@ pub fn prompt_init_options(user: &str, defaults: Option<&InitOptions>) -> Result
     let ssh_key_path = prompt_with_default("SSH key path", &default_ssh_key_path)?;
     validate_ssh_key_path(&ssh_key_path)?;
 
+    let token_gitlab_host = prompt_with_default(
+        "GitLab host (optional, exported as GITLAB_HOST)",
+        defaults
+            .map(|defaults| defaults.token_gitlab_host.as_str())
+            .unwrap_or(""),
+    )?;
+    let token_gitlab = prompt_with_default(
+        "GitLab API token (optional, exported as GITLAB_TOKEN)",
+        defaults
+            .map(|defaults| defaults.token_gitlab.as_str())
+            .unwrap_or(""),
+    )?;
+    let token_github = prompt_with_default(
+        "GitHub API token (optional, exported as GH_TOKEN)",
+        defaults
+            .map(|defaults| defaults.token_github.as_str())
+            .unwrap_or(""),
+    )?;
+
     Ok(InitOptions {
         user_name: user.to_string(),
         user_email,
         ssh_key_path,
+        token_gitlab_host,
+        token_gitlab,
+        token_github,
     })
 }
 

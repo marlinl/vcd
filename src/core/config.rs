@@ -19,6 +19,9 @@ pub struct VcdConfig {
     pub container_id: String,
     pub proxy_url: String,
     pub no_proxy: String,
+    pub token_gitlab_host: String,
+    pub token_gitlab: String,
+    pub token_github: String,
 }
 
 pub fn default_config_dir() -> Result<PathBuf> {
@@ -127,6 +130,15 @@ pub fn set(key: &str, value: &str) -> Result<()> {
         "proxy.no_proxy" => {
             config.no_proxy = value.to_string();
         }
+        "token.gitlab-host" => {
+            config.token_gitlab_host = value.to_string();
+        }
+        "token.gitlab" => {
+            config.token_gitlab = value.to_string();
+        }
+        "token.github" => {
+            config.token_github = value.to_string();
+        }
         _ => return Err(unsupported_key(key)),
     }
 
@@ -136,9 +148,16 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn list() -> Result<()> {
+    let config_path = default_config_path()?;
+    let config = read_config(&config_path)?;
+    print!("{}", serialize(&config));
+    Ok(())
+}
+
 pub fn serialize(config: &VcdConfig) -> String {
     format!(
-        "user.name={}\nuser.email={}\nssh.key_path={}\ninitialized_at={}\ncontainer.docker_build={}\ncontainer.id={}\nproxy.url={}\nproxy.no_proxy={}\n",
+        "user.name={}\nuser.email={}\nssh.key_path={}\ninitialized_at={}\ncontainer.docker_build={}\ncontainer.id={}\nproxy.url={}\nproxy.no_proxy={}\ntoken.gitlab-host={}\ntoken.gitlab={}\ntoken.github={}\n",
         config.user_name,
         config.user_email,
         config.ssh_key_path,
@@ -146,7 +165,10 @@ pub fn serialize(config: &VcdConfig) -> String {
         config.container_docker_build,
         config.container_id,
         config.proxy_url,
-        config.no_proxy
+        config.no_proxy,
+        config.token_gitlab_host,
+        config.token_gitlab,
+        config.token_github
     )
 }
 
@@ -160,6 +182,9 @@ fn parse(content: &str) -> Result<VcdConfig> {
     let mut container_id = None;
     let mut proxy_url = None;
     let mut no_proxy = None;
+    let mut token_gitlab_host = None;
+    let mut token_gitlab = None;
+    let mut token_github = None;
 
     for line in content.lines() {
         let Some((key, value)) = line.split_once('=') else {
@@ -182,6 +207,9 @@ fn parse(content: &str) -> Result<VcdConfig> {
             "initialized_at" => initialized_at = Some(value.to_string()),
             "proxy.url" => proxy_url = Some(value.to_string()),
             "proxy.no_proxy" => no_proxy = Some(value.to_string()),
+            "token.gitlab-host" => token_gitlab_host = Some(value.to_string()),
+            "token.gitlab" => token_gitlab = Some(value.to_string()),
+            "token.github" => token_github = Some(value.to_string()),
             _ => {}
         }
     }
@@ -201,6 +229,9 @@ fn parse(content: &str) -> Result<VcdConfig> {
         container_id,
         proxy_url: proxy_url.unwrap_or_else(|| DEFAULT_PROXY_URL.to_string()),
         no_proxy: no_proxy.unwrap_or_else(|| DEFAULT_NO_PROXY.to_string()),
+        token_gitlab_host: token_gitlab_host.unwrap_or_default(),
+        token_gitlab: token_gitlab.unwrap_or_default(),
+        token_github: token_github.unwrap_or_default(),
     })
 }
 
@@ -252,7 +283,7 @@ fn validate_ssh_key_path(value: &str) -> Result<()> {
 
 fn unsupported_key(key: &str) -> VcdError {
     VcdError::new("配置修改失败", format!("unsupported config key '{key}'")).with_hint(
-        "当前支持: user.name, user.email, ssh.key_path, container.docker_build, container.id, proxy.url, proxy.no_proxy",
+        "当前支持: user.name, user.email, ssh.key_path, container.docker_build, container.id, proxy.url, proxy.no_proxy, token.gitlab-host, token.gitlab, token.github",
     )
 }
 
@@ -271,18 +302,21 @@ mod tests {
             container_id: "vcd-jack:20260520103000".to_string(),
             proxy_url: "http://host.docker.internal:1087".to_string(),
             no_proxy: "localhost,127.0.0.1,::1,host.docker.internal,.local".to_string(),
+            token_gitlab_host: "gitlab.example.com".to_string(),
+            token_gitlab: "glpat-example".to_string(),
+            token_github: "ghp_example".to_string(),
         });
 
         assert_eq!(
             output,
-            "user.name=jack\nuser.email=jack@example.com\nssh.key_path=/Users/jack/.ssh/id_rsa\ninitialized_at=20260520103000\ncontainer.docker_build=/Users/jack/.config/vcd/Dockerfile\ncontainer.id=vcd-jack:20260520103000\nproxy.url=http://host.docker.internal:1087\nproxy.no_proxy=localhost,127.0.0.1,::1,host.docker.internal,.local\n"
+            "user.name=jack\nuser.email=jack@example.com\nssh.key_path=/Users/jack/.ssh/id_rsa\ninitialized_at=20260520103000\ncontainer.docker_build=/Users/jack/.config/vcd/Dockerfile\ncontainer.id=vcd-jack:20260520103000\nproxy.url=http://host.docker.internal:1087\nproxy.no_proxy=localhost,127.0.0.1,::1,host.docker.internal,.local\ntoken.gitlab-host=gitlab.example.com\ntoken.gitlab=glpat-example\ntoken.github=ghp_example\n"
         );
     }
 
     #[test]
     fn parses_config() {
         let config = parse(
-            "user.name=jack\nuser.email=jack@example.com\nssh.key_path=/Users/jack/.ssh/id_rsa\ninitialized_at=now\ncontainer.docker_build=/Users/jack/.config/vcd/Dockerfile\ncontainer.id=vcd-jack:now\nproxy.url=http://host.docker.internal:7897\nproxy.no_proxy=localhost,127.0.0.1\n",
+            "user.name=jack\nuser.email=jack@example.com\nssh.key_path=/Users/jack/.ssh/id_rsa\ninitialized_at=now\ncontainer.docker_build=/Users/jack/.config/vcd/Dockerfile\ncontainer.id=vcd-jack:now\nproxy.url=http://host.docker.internal:7897\nproxy.no_proxy=localhost,127.0.0.1\ntoken.gitlab-host=gitlab.example.com\ntoken.gitlab=glpat-example\ntoken.github=ghp_example\n",
         )
         .unwrap();
 
@@ -297,6 +331,9 @@ mod tests {
                 container_id: "vcd-jack:now".to_string(),
                 proxy_url: "http://host.docker.internal:7897".to_string(),
                 no_proxy: "localhost,127.0.0.1".to_string(),
+                token_gitlab_host: "gitlab.example.com".to_string(),
+                token_gitlab: "glpat-example".to_string(),
+                token_github: "ghp_example".to_string(),
             }
         );
     }
@@ -311,6 +348,9 @@ mod tests {
         assert_eq!(config.container_docker_build, "");
         assert_eq!(config.container_id, "vcd-jack:20260520103000");
         assert_eq!(config.ssh_key_path, "/Users/jack/.ssh/id_rsa");
+        assert_eq!(config.token_gitlab_host, "");
+        assert_eq!(config.token_gitlab, "");
+        assert_eq!(config.token_github, "");
     }
 
     #[test]

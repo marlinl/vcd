@@ -69,6 +69,9 @@ pub(super) fn build_and_write_config(options: &InitOptions) -> Result<()> {
         container_id,
         proxy_url: proxy_url.clone(),
         no_proxy: no_proxy.clone(),
+        token_gitlab_host: options.token_gitlab_host.clone(),
+        token_gitlab: options.token_gitlab.clone(),
+        token_github: options.token_github.clone(),
     };
     config::write_config(&config_path, &next_config)?;
 
