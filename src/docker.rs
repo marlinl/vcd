@@ -661,50 +661,6 @@ fn checkout_branch(container: &str, project_path: &str, branch: &BranchPlan) -> 
                 "git pull --ff-only failed",
             )
         }
-        BranchPlan::TempFromMaster { base, branch } => {
-            docker_exec_checked(
-                container,
-                &["git", "-C", project_path, "fetch", "origin", base.as_str()],
-                "Git 分支更新失败",
-                "git fetch origin master failed",
-            )?;
-            docker_exec_checked(
-                container,
-                &["git", "-C", project_path, "checkout", base.as_str()],
-                "Git 分支切换失败",
-                "git checkout master failed",
-            )?;
-            docker_exec_checked(
-                container,
-                &[
-                    "git",
-                    "-C",
-                    project_path,
-                    "pull",
-                    "--ff-only",
-                    "origin",
-                    base.as_str(),
-                ],
-                "Git 分支更新失败",
-                "git pull --ff-only origin master failed",
-            )?;
-
-            if local_branch_exists(container, project_path, branch)? {
-                docker_exec_checked(
-                    container,
-                    &["git", "-C", project_path, "checkout", branch.as_str()],
-                    "Git 分支切换失败",
-                    "git checkout temp failed",
-                )
-            } else {
-                docker_exec_checked(
-                    container,
-                    &["git", "-C", project_path, "checkout", "-b", branch.as_str()],
-                    "Git 分支切换失败",
-                    "git checkout -b temp failed",
-                )
-            }
-        }
     }
 }
 

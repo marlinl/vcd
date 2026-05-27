@@ -117,18 +117,14 @@ fn resolve_editor(name: &str) -> Result<Editor> {
 fn resolve_branch(
     branch: Option<&str>,
     repo: &repo::GitRepo,
-    config: &config::VcdConfig,
+    _config: &config::VcdConfig,
 ) -> Result<repo::BranchPlan> {
     if let Some(name) = branch.map(str::trim).filter(|b| !b.is_empty()) {
-        return repo::BranchPlan::from_optional(Some(name));
+        return repo::BranchPlan::named(name);
     }
-    if repo.mr_iid.is_some() {
-        let source_branch = repo.gitlab_mr_source_branch(&config.token_gitlab)?;
-        println!("GitLab MR source branch: {}", source_branch);
-        repo::BranchPlan::from_optional(Some(&source_branch))
-    } else {
-        repo::BranchPlan::from_optional(None)
-    }
+    let branch = repo.branch_from_url_or_default()?;
+    println!("Resolved {} branch: {branch}", repo.platform_name());
+    repo::BranchPlan::named(&branch)
 }
 
 #[cfg(test)]
