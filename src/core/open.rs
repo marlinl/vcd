@@ -28,7 +28,6 @@ pub fn run(
 ) -> Result<()> {
     let editor = resolve_editor(editor_name)?;
     let repo = repo::GitRepo::parse(repo_url)?;
-    let branch = resolve_branch(branch, &repo.mr_iid)?;
     let profile = match profile_name {
         Some(name) => Some(profile::load(name)?),
         None => None,
@@ -40,6 +39,7 @@ pub fn run(
         .transpose()?;
     let config_path = config::default_config_path()?;
     let config = config::read_config(&config_path)?;
+    let branch = resolve_branch(branch, &repo, &config)?;
     let timestamp = docker::timestamp()?;
     let container =
         docker::container_name(&config.user_name, editor.name(), &repo.project, &timestamp);
@@ -114,13 +114,20 @@ fn resolve_editor(name: &str) -> Result<Editor> {
     }
 }
 
-fn resolve_branch(branch: Option<&str>, mr_iid: &Option<String>) -> Result<repo::BranchPlan> {
+fn resolve_branch(
+    branch: Option<&str>,
+    repo: &repo::GitRepo,
+    config: &config::VcdConfig,
+) -> Result<repo::BranchPlan> {
     if let Some(name) = branch.map(str::trim).filter(|b| !b.is_empty()) {
         return repo::BranchPlan::from_optional(Some(name));
     }
-    match mr_iid {
-        Some(iid) => Ok(repo::BranchPlan::MergeRequest { iid: iid.clone() }),
-        None => repo::BranchPlan::from_optional(None),
+    if repo.mr_iid.is_some() {
+        let source_branch = repo.gitlab_mr_source_branch(&config.token_gitlab)?;
+        println!("GitLab MR source branch: {}", source_branch);
+        repo::BranchPlan::from_optional(Some(&source_branch))
+    } else {
+        repo::BranchPlan::from_optional(None)
     }
 }
 

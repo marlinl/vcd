@@ -14,7 +14,7 @@ vcd config set <key> <value>
 
 命令会启动一个带时间戳名称的一次性 Docker container，在容器内准备 Git 仓库，切换到目标分支，然后在项目根目录启动选定的 AI coding tool。编辑器退出或打开流程失败后，vcd 会尝试删除本次 container。
 
-除普通 Git 仓库 URL 外，命令也支持 GitLab merge request URL。传入 MR URL 且未显式传入 `[branch]` 时，vcd 会自动拉取 MR ref 并 checkout 到本地 `mr/<iid>` 分支。
+除普通 Git 仓库 URL 外，命令也支持 GitLab merge request URL。传入 MR URL 且未显式传入 `[branch]` 时，vcd 会通过 GitLab API 读取 MR 的 source branch，并 checkout 到这个源分支，而不是创建 `mr/<iid>` 之类的本地临时分支。
 
 命令也支持通过 profile 加载插件组合。传入 `-pf <profile-name>` 或 `--profile <profile-name>` 时，vcd 会读取本机 profile 关联的 plugin，在启动 editor 前把这些 plugin 安装到项目容器内。
 
@@ -76,7 +76,7 @@ vcd claude https://github.com/user/project.git feature-a --profile frontend
 
 - 可选。
 - 如果传入，vcd 切到该分支。
-- 如果传入 GitLab MR URL 且未传 `branch`，vcd 自动 checkout 对应 MR 分支。
+- 如果传入 GitLab MR URL 且未传 `branch`，vcd 自动解析并 checkout MR source branch。
 - 如果既传入 GitLab MR URL 又传入 `branch`，显式 `branch` 优先，MR URL 只用于推导 clone URL 和 project name。
 - 如果省略且 URL 不是 GitLab MR URL，vcd 切到 `master` 并更新，然后创建或复用本地 `temp` 分支。
 
@@ -235,7 +235,7 @@ openai-tools
 6. 把 project name 规范化成适合容器名的格式。
 7. 解析 branch plan：
    - 传入 branch -> named branch plan
-   - 未传 branch 且 URL 是 GitLab MR URL -> merge-request branch plan
+   - 未传 branch 且 URL 是 GitLab MR URL -> GitLab MR source branch plan
    - 未传 branch 且 URL 是普通仓库 URL -> temp-from-master plan
 8. 解析 profile option：
    - 未传 profile -> no profile plan
@@ -243,6 +243,32 @@ openai-tools
    - `--profile <profile-name>` -> profile plan
 9. profile flag 缺少 value 时，参数解析失败。
 10. 同一次命令重复传入 profile 时，参数解析失败，避免配置歧义。
+
+### Resolve GitLab MR Source Branch
+
+仅在传入 GitLab MR URL 且未显式传入 `[branch]` 时执行。
+
+1. 从 MR URL 解析：
+   - GitLab base URL，例如 `https://gitlab.example.com`
+   - project path，例如 `group/project`
+   - MR IID，例如 `42`
+2. 调用 GitLab API：
+
+   ```text
+   GET /api/v4/projects/<url-encoded-project-path>/merge_requests/<iid>
+   ```
+
+3. 如果配置中存在 `token.gitlab`，请求应带上：
+
+   ```text
+   PRIVATE-TOKEN: <token.gitlab>
+   ```
+
+4. 从响应中读取 `source_branch`。
+5. 校验 `source_branch` 是安全的 Git 分支名。
+6. 后续分支行为按普通 named branch 执行。
+
+如果 API 请求失败或响应中缺少 `source_branch`，应在创建 Docker container 前失败，并提示用户配置 `token.gitlab`，或显式传入 MR 源分支名。
 
 ### Read Profile
 
@@ -392,16 +418,23 @@ openai-tools
 
 传入 GitLab MR URL 且未传 branch 时：
 
-1. 拉取对应 MR ref 到本地 `mr/<iid>` 分支：
+1. 先通过 GitLab API 解析 MR source branch。
+2. 如果本地 source branch 存在：
 
    ```bash
-   git -C /home/<user>/<project> fetch origin refs/merge-requests/<iid>/head:mr/<iid>
+   git -C /home/<user>/<project> checkout <source-branch>
    ```
 
-2. 切到本地 MR 分支：
+3. 否则从远端创建或重置本地 source branch：
 
    ```bash
-   git -C /home/<user>/<project> checkout mr/<iid>
+   git -C /home/<user>/<project> checkout -B <source-branch> origin/<source-branch>
+   ```
+
+4. 更新 source branch：
+
+   ```bash
+   git -C /home/<user>/<project> pull --ff-only origin <source-branch>
    ```
 
 未传 branch 时：
@@ -574,9 +607,9 @@ https://<host>/<group>/<project>/-/merge_requests/<iid>
 
 其中 `<iid>` 必须是数字。GitHub pull request URL 等其他平台 URL 不会进入 MR 自动 checkout 流程。
 
-如果 MR ref 不存在、无权限访问或远端不支持 `refs/merge-requests/<iid>/head`，`git fetch` 会失败。
+如果 GitLab API 无权限访问、token 缺失或响应中没有 `source_branch`，应把错误归类为 GitLab MR 解析失败，并提示用户配置 `token.gitlab` 或显式传入 MR 源分支名。
 
-应把错误归类为 MR branch fetch failure。
+如果 source branch 不存在于 origin，例如 MR 来自 fork 或源分支已删除，后续 `origin/<source-branch>` checkout 会失败。应把错误归类为 branch switch failure。
 
 ### Default Branch Is Not master
 

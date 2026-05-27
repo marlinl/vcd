@@ -705,29 +705,6 @@ fn checkout_branch(container: &str, project_path: &str, branch: &BranchPlan) -> 
                 )
             }
         }
-        BranchPlan::MergeRequest { iid } => {
-            let refspec = format!("refs/merge-requests/{iid}/head:mr/{iid}");
-            docker_exec_checked(
-                container,
-                &[
-                    "git",
-                    "-C",
-                    project_path,
-                    "fetch",
-                    "origin",
-                    refspec.as_str(),
-                ],
-                "MR 分支拉取失败",
-                "git fetch merge request ref failed",
-            )?;
-            let local_branch = format!("mr/{iid}");
-            docker_exec_checked(
-                container,
-                &["git", "-C", project_path, "checkout", local_branch.as_str()],
-                "MR 分支切换失败",
-                "git checkout mr branch failed",
-            )
-        }
     }
 }
 
