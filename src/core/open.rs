@@ -2,7 +2,7 @@ use crate::docker;
 use crate::error::{Result, VcdError};
 use crate::repo;
 
-use super::config;
+use super::{config, plugin, profile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Editor {
@@ -20,10 +20,24 @@ impl Editor {
     }
 }
 
-pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()> {
+pub fn run(
+    editor_name: &str,
+    repo_url: &str,
+    branch: Option<&str>,
+    profile_name: Option<&str>,
+) -> Result<()> {
     let editor = resolve_editor(editor_name)?;
     let repo = repo::GitRepo::parse(repo_url)?;
     let branch = resolve_branch(branch, &repo.mr_iid)?;
+    let profile = match profile_name {
+        Some(name) => Some(profile::load(name)?),
+        None => None,
+    };
+    let plugin_root = profile
+        .as_ref()
+        .filter(|profile| !profile.plugins.is_empty())
+        .map(|_| plugin::plugin_root().map(|path| path.display().to_string()))
+        .transpose()?;
     let config_path = config::default_config_path()?;
     let config = config::read_config(&config_path)?;
     let timestamp = docker::timestamp()?;
@@ -36,6 +50,7 @@ pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()
         image: config.container_id.clone(),
         user: config.user_name.clone(),
         ssh_key_path: config.ssh_key_path.clone(),
+        plugin_root,
         proxy_url: config.proxy_url.clone(),
         no_proxy: config.no_proxy.clone(),
         token_gitlab_host: config.token_gitlab_host.clone(),
@@ -45,15 +60,29 @@ pub fn run(editor_name: &str, repo_url: &str, branch: Option<&str>) -> Result<()
 
     let open_result = (|| {
         docker::prepare_repo(&container, &config.user_name, &repo, &branch)?;
-        docker::open_editor(
-            &container,
-            &config.user_name,
-            editor.command(),
-            &repo.project,
-            &config.token_gitlab_host,
-            &config.token_gitlab,
-            &config.token_github,
-        )
+        let profile_plugins = profile
+            .as_ref()
+            .map(|profile| profile.plugins.as_slice())
+            .unwrap_or(&[]);
+        if let Some(profile) = &profile {
+            docker::install_profile_plugins(
+                &container,
+                &config.user_name,
+                editor.name(),
+                &profile.plugins,
+            )?;
+            profile::print_profile(profile);
+        }
+        docker::open_editor(&docker::EditorRequest {
+            container: container.clone(),
+            user: config.user_name.clone(),
+            editor: editor.command().to_string(),
+            project: repo.project.clone(),
+            plugins: profile_plugins.to_vec(),
+            token_gitlab_host: config.token_gitlab_host.clone(),
+            token_gitlab: config.token_gitlab.clone(),
+            token_github: config.token_github.clone(),
+        })
     })();
     let cleanup_result = docker::remove_container(&container);
 
