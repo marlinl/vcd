@@ -56,6 +56,27 @@ vcd init <user>
 vcd <codex|claude> <git-url> [branch]
 ```
 
+使用 profile 打开仓库并加载插件：
+
+```bash
+vcd <codex|claude> <git-url> [branch] -pf <profile-name>
+vcd <codex|claude> <git-url> [branch] --profile <profile-name>
+```
+
+安装插件：
+
+```bash
+vcd plugin add <git-url>
+vcd plugin list
+```
+
+定义 profile 和关联插件：
+
+```bash
+vcd profile <profile-name> add <plugin-name>
+vcd profile <profile-name>
+```
+
 修改配置：
 
 ```bash
@@ -90,6 +111,8 @@ token.github
 ```
 
 `token.gitlab-host` 会在打开项目容器时作为 `GITLAB_HOST` 注入容器，供 `glab` 使用。`token.gitlab` 会作为 `GITLAB_TOKEN` 注入容器。`token.github` 会作为 `GH_TOKEN` 注入容器，供 `gh` 使用。
+
+插件会下载到 `~/.config/vcd/plugins/<plugin-name>`。profile 会保存到 `~/.config/vcd/profiles/<profile-name>`，每行关联一个插件名。使用 `--profile` 打开 Claude 项目时，vcd 会把 profile 中的插件挂载到容器，并通过 Claude Code 的 `--plugin-dir` 参数加载。
 
 ## 许可
 

@@ -2,7 +2,7 @@
 
 ## 1. Context
 
-`vcd <codex|claude> <git-url> [branch]` 是 vcd 的核心项目打开命令。
+`vcd <codex|claude> <git-url> [branch] [-pf|--profile <profile-name>]` 是 vcd 的核心项目打开命令。
 
 它依赖以下命令提前准备好的本地 base image：
 
@@ -15,6 +15,8 @@ vcd config set <key> <value>
 命令会启动一个带时间戳名称的一次性 Docker container，在容器内准备 Git 仓库，切换到目标分支，然后在项目根目录启动选定的 AI coding tool。编辑器退出或打开流程失败后，vcd 会尝试删除本次 container。
 
 除普通 Git 仓库 URL 外，命令也支持 GitLab merge request URL。传入 MR URL 且未显式传入 `[branch]` 时，vcd 会自动拉取 MR ref 并 checkout 到本地 `mr/<iid>` 分支。
+
+命令也支持通过 profile 加载插件组合。传入 `-pf <profile-name>` 或 `--profile <profile-name>` 时，vcd 会读取本机 profile 关联的 plugin，在启动 editor 前把这些 plugin 安装到项目容器内。
 
 当前支持的 editor：
 
@@ -37,6 +39,8 @@ claude
 
 ```bash
 vcd <codex|claude> <git-url> [branch]
+vcd <codex|claude> <git-url> [branch] -pf <profile-name>
+vcd <codex|claude> <git-url> [branch] --profile <profile-name>
 ```
 
 示例：
@@ -45,6 +49,8 @@ vcd <codex|claude> <git-url> [branch]
 vcd codex https://github.com/user/project.git
 vcd claude https://github.com/user/project.git feature-a
 vcd codex https://gitlab.com/group/project/-/merge_requests/42
+vcd codex https://github.com/user/project.git -pf backend
+vcd claude https://github.com/user/project.git feature-a --profile frontend
 ```
 
 ### Inputs
@@ -73,6 +79,27 @@ vcd codex https://gitlab.com/group/project/-/merge_requests/42
 - 如果传入 GitLab MR URL 且未传 `branch`，vcd 自动 checkout 对应 MR 分支。
 - 如果既传入 GitLab MR URL 又传入 `branch`，显式 `branch` 优先，MR URL 只用于推导 clone URL 和 project name。
 - 如果省略且 URL 不是 GitLab MR URL，vcd 切到 `master` 并更新，然后创建或复用本地 `temp` 分支。
+
+`-pf` / `--profile`：
+
+- 可选。
+- 必须带一个 `profile-name`。
+- `-pf` 和 `--profile` 语义相同。
+- `profile-name` 必须满足 `vcd profile` 的 profile name 校验规则。
+- profile 必须已经存在于：
+
+  ```text
+  ~/.config/vcd/profiles/<profile-name>
+  ```
+
+- profile 中关联的每个 plugin 必须已经存在于：
+
+  ```text
+  ~/.config/vcd/plugins/<plugin-name>
+  ```
+
+- profile 参数可以放在 `[branch]` 之前或之后；解析后应得到同一个结果。
+- 如果 profile 存在但没有关联任何 plugin，打开流程可以继续，但应提示该 profile 没有插件。
 
 ### Prerequisites
 
@@ -125,6 +152,13 @@ vcd rebuild
 - 选定的 editor command
 - editor 所需的认证或配置目录
 
+如果传入 profile，还要求本机已经通过以下命令准备好插件：
+
+```bash
+vcd plugin add <git-url>
+vcd profile <profile-name> add <plugin-name>
+```
+
 ### Outputs
 
 成功后，当前终端会附着到容器内运行的 editor 进程。
@@ -149,11 +183,31 @@ GH_TOKEN=<token.github>
 docker exec -it -w /home/<user>/<project> <container> codex .
 ```
 
-选择 `claude` 时执行：
+选择 `claude` 且未传 profile 时执行：
 
 ```bash
 docker exec -it -w /home/<user>/<project> <container> claude .
 ```
+
+选择 `claude` 且传入 profile 时，每个 plugin 会通过 Claude Code 官方的本地开发插件参数加载：
+
+```bash
+docker exec -it -w /home/<user>/<project> <container> \
+  claude \
+  --plugin-dir /home/<user>/.config/vcd/plugins/<plugin-name> \
+  .
+```
+
+如果传入 profile，启动 editor 前应输出 profile 加载结果：
+
+```text
+Profile: backend
+Plugins:
+rust-tools
+openai-tools
+```
+
+如果插件安装失败，不应启动 editor。
 
 ## 3. Core Logic
 
@@ -165,6 +219,7 @@ docker exec -it -w /home/<user>/<project> <container> claude .
    editor = codex | claude
    repo_url = <git-url>
    branch = optional
+   profile = optional
    ```
 
 2. 解析 editor：
@@ -182,6 +237,43 @@ docker exec -it -w /home/<user>/<project> <container> claude .
    - 传入 branch -> named branch plan
    - 未传 branch 且 URL 是 GitLab MR URL -> merge-request branch plan
    - 未传 branch 且 URL 是普通仓库 URL -> temp-from-master plan
+8. 解析 profile option：
+   - 未传 profile -> no profile plan
+   - `-pf <profile-name>` -> profile plan
+   - `--profile <profile-name>` -> profile plan
+9. profile flag 缺少 value 时，参数解析失败。
+10. 同一次命令重复传入 profile 时，参数解析失败，避免配置歧义。
+
+### Read Profile
+
+仅在传入 `-pf` 或 `--profile` 时执行。
+
+1. 校验 `profile-name`。
+2. 读取 profile 文件：
+
+   ```text
+   ~/.config/vcd/profiles/<profile-name>
+   ```
+
+3. 如果 profile 文件不存在，失败并提示：
+
+   ```bash
+   vcd profile <profile-name> add <plugin-name>
+   ```
+
+4. 解析 profile 关联的 plugin name。
+5. 去掉空行，去重并按 plugin name 升序排序。
+6. 对每个 plugin 检查本机目录存在：
+
+   ```text
+   ~/.config/vcd/plugins/<plugin-name>
+   ```
+
+7. 如果任意 plugin 缺失，失败并提示先执行：
+
+   ```bash
+   vcd plugin add <git-url>
+   ```
 
 ### Read Config
 
@@ -249,6 +341,14 @@ docker exec -it -w /home/<user>/<project> <container> claude .
 6. 如果极少数情况下同名 container 已存在但已停止，执行 start。
 7. 如果极少数情况下同名 container 存在但 paused，执行 unpause。
 8. 如果极少数情况下同名 container 已 running，确认 SSH key mount 存在。
+
+如果传入 profile，创建 container 时还应把本机插件目录只读挂载到容器内：
+
+```bash
+-v ~/.config/vcd/plugins:/home/<user>/.config/vcd/plugins:ro
+```
+
+如果插件目录不存在，应该在 Read Profile 阶段提前失败，而不是等到 Docker run 时失败。
 
 ### Prepare Repository
 
@@ -336,12 +436,65 @@ docker exec -it -w /home/<user>/<project> <container> claude .
    git -C /home/<user>/<project> checkout -b temp
    ```
 
+### Install Profile Plugins
+
+仅在传入 `-pf` 或 `--profile` 时执行，并且必须发生在 `Prepare Repository` 成功之后、`Launch Editor` 之前。
+
+安装流程：
+
+1. 读取 profile 中的 plugin 列表。
+2. 对每个 plugin 生成容器内源目录：
+
+   ```text
+   /home/<user>/.config/vcd/plugins/<plugin-name>
+   ```
+
+3. 对每个 plugin 生成 editor-specific 安装目标目录。
+
+   `codex`：
+
+   ```text
+   /home/<user>/.codex/plugins/<plugin-name>
+   ```
+
+   `claude`：
+
+   ```text
+   /home/<user>/.claude/plugins/<plugin-name>
+   ```
+
+4. 在容器内创建 editor plugin 目录。
+5. 如果目标 plugin 目录已存在，先检查它是否是 symlink：
+   - 如果是 symlink 且指向当前 vcd plugin 源目录，可以复用。
+   - 如果是普通目录或指向其他位置的 symlink，失败，避免覆盖用户手动安装的插件。
+6. 如果目标目录不存在，创建 symlink：
+
+   ```bash
+   ln -s /home/<user>/.config/vcd/plugins/<plugin-name> /home/<user>/.codex/plugins/<plugin-name>
+   ```
+
+   或：
+
+   ```bash
+   ln -s /home/<user>/.config/vcd/plugins/<plugin-name> /home/<user>/.claude/plugins/<plugin-name>
+   ```
+
+7. 任意 plugin 安装失败时，打开流程失败并跳过 editor 启动。
+
+插件安装阶段不执行插件仓库中的脚本或命令；当前语义只是把 profile 关联的本机插件目录安装为 editor 可发现的插件目录。
+
+Claude Code 不会仅因为 `~/.claude/plugins/<plugin-name>` 存在就自动加载本地插件。选择 `claude` 时，启动 editor 必须为每个 profile plugin 追加：
+
+```bash
+--plugin-dir /home/<user>/.config/vcd/plugins/<plugin-name>
+```
+
 ### Launch Editor
 
 交互式启动选定 editor：
 
 ```bash
-docker exec -it -w /home/<user>/<project> <container> <editor> .
+docker exec -it -w /home/<user>/<project> <container> <editor> [plugin-args] .
 ```
 
 该进程必须继承终端 stdin/stdout/stderr。
@@ -448,6 +601,77 @@ git symbolic-ref refs/remotes/origin/HEAD
 如果 clone 被中断，留下 `/home/<user>/<project>` 但没有 `.git`，当前逻辑会再次 clone，可能因为目录已存在而失败。
 
 未来应该识别这种半成品目录，并给出明确恢复提示。
+
+### Missing Profile Value
+
+如果传入 `-pf` 或 `--profile` 但没有跟随 `<profile-name>`，应在参数解析阶段失败。
+
+提示正确用法：
+
+```bash
+vcd codex <git-url> --profile <profile-name>
+vcd claude <git-url> -pf <profile-name>
+```
+
+### Duplicate Profile Flag
+
+同一次命令中不允许重复传入 `-pf` 或 `--profile`。
+
+例如以下命令应失败，避免 profile 选择歧义：
+
+```bash
+vcd codex https://github.com/user/project.git -pf backend --profile frontend
+```
+
+### Missing Profile
+
+如果指定的 profile 文件不存在：
+
+```text
+~/.config/vcd/profiles/<profile-name>
+```
+
+打开流程应在创建 Docker container 前失败，并提示：
+
+```bash
+vcd profile <profile-name> add <plugin-name>
+```
+
+### Missing Profile Plugin
+
+如果 profile 关联了某个 plugin，但本机插件目录不存在：
+
+```text
+~/.config/vcd/plugins/<plugin-name>
+```
+
+打开流程应在创建 Docker container 前失败，并提示先添加插件：
+
+```bash
+vcd plugin add <git-url>
+```
+
+### Existing Editor Plugin Path
+
+安装 profile plugin 时，如果 editor plugin 目标路径已经存在且不是指向当前 vcd plugin 源目录的 symlink，必须失败。
+
+不要覆盖用户在以下目录中手动安装的插件：
+
+```text
+/home/<user>/.codex/plugins/<plugin-name>
+/home/<user>/.claude/plugins/<plugin-name>
+```
+
+### Empty Profile
+
+如果 profile 文件存在但没有任何 plugin，打开流程可以继续。
+
+此时应输出明确提示，例如：
+
+```text
+Profile: backend
+Plugins: none
+```
 
 ### Authentication
 

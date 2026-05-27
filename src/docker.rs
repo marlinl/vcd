@@ -29,8 +29,21 @@ pub struct ContainerRequest {
     pub image: String,
     pub user: String,
     pub ssh_key_path: String,
+    pub plugin_root: Option<String>,
     pub proxy_url: String,
     pub no_proxy: String,
+    pub token_gitlab_host: String,
+    pub token_gitlab: String,
+    pub token_github: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorRequest {
+    pub container: String,
+    pub user: String,
+    pub editor: String,
+    pub project: String,
+    pub plugins: Vec<String>,
     pub token_gitlab_host: String,
     pub token_gitlab: String,
     pub token_github: String,
@@ -354,14 +367,14 @@ pub fn container_name(user: &str, editor: &str, project: &str, timestamp: &str) 
 
 pub fn ensure_container(request: &ContainerRequest) -> Result<()> {
     match container_status(&request.name)? {
-        Some(status) if status == "running" => ensure_ssh_mount(request),
+        Some(status) if status == "running" => ensure_required_mounts(request),
         Some(status) if status == "paused" => {
             docker_checked(
                 &["unpause", request.name.as_str()],
                 "容器启动失败",
                 "docker unpause failed",
             )?;
-            ensure_ssh_mount(request)
+            ensure_required_mounts(request)
         }
         Some(_) => {
             docker_checked(
@@ -369,7 +382,7 @@ pub fn ensure_container(request: &ContainerRequest) -> Result<()> {
                 "容器启动失败",
                 "docker start failed",
             )?;
-            ensure_ssh_mount(request)
+            ensure_required_mounts(request)
         }
         None => {
             ensure_host_ssh_key(&request.ssh_key_path)?;
@@ -393,6 +406,7 @@ pub fn ensure_container(request: &ContainerRequest) -> Result<()> {
                 "-v".to_string(),
                 ssh_file_mount(&request.user, &request.ssh_key_path)?,
             ];
+            add_optional_claude_config_mount(&mut args, &request.user);
             add_optional_ssh_mount(
                 &mut args,
                 &request.user,
@@ -410,6 +424,11 @@ pub fn ensure_container(request: &ContainerRequest) -> Result<()> {
                 &request.ssh_key_path,
                 "config",
             )?;
+            if let Some(plugin_root) = &request.plugin_root {
+                ensure_host_plugin_root(plugin_root)?;
+                args.push("-v".to_string());
+                args.push(plugin_root_mount(&request.user, plugin_root));
+            }
             inject_proxy_env(&mut args, &request.proxy_url, &request.no_proxy);
             inject_token_env(
                 &mut args,
@@ -507,25 +526,96 @@ pub fn prepare_repo(
     checkout_branch(container, &project_path, branch)
 }
 
-pub fn open_editor(
-    container: &str,
-    user: &str,
-    editor: &str,
-    project: &str,
-    token_gitlab_host: &str,
-    token_gitlab: &str,
-    token_github: &str,
-) -> Result<()> {
-    let project_path = project_path(user, project);
+pub fn open_editor(request: &EditorRequest) -> Result<()> {
+    if request.editor == "claude" {
+        ensure_claude_config(&request.container, &request.user)?;
+    }
+
+    let project_path = project_path(&request.user, &request.project);
     let mut args = vec![
         "exec".to_string(),
         "-it".to_string(),
         "-w".to_string(),
         project_path,
     ];
-    inject_token_env(&mut args, token_gitlab_host, token_gitlab, token_github);
-    args.extend([container.to_string(), editor.to_string(), ".".to_string()]);
+    inject_token_env(
+        &mut args,
+        &request.token_gitlab_host,
+        &request.token_gitlab,
+        &request.token_github,
+    );
+    args.extend([request.container.clone(), request.editor.clone()]);
+    args.extend(editor_plugin_args(
+        &request.user,
+        &request.editor,
+        &request.plugins,
+    ));
+    args.push(".".to_string());
     docker_checked_strings_interactive(&args, "编辑器启动失败", "docker exec failed")
+}
+
+pub fn install_profile_plugins(
+    container: &str,
+    user: &str,
+    editor: &str,
+    plugins: &[String],
+) -> Result<()> {
+    if plugins.is_empty() {
+        return Ok(());
+    }
+
+    let target_root = editor_plugin_root(user, editor);
+    docker_exec_checked(
+        container,
+        &["mkdir", "-p", target_root.as_str()],
+        "插件安装失败",
+        "failed to create editor plugin directory",
+    )?;
+
+    for plugin in plugins {
+        let source = container_plugin_path(user, plugin);
+        let target = format!("{target_root}/{plugin}");
+
+        if !docker_exec_status(container, &["test", "-d", source.as_str()])? {
+            return Err(VcdError::new(
+                "插件安装失败",
+                format!("container plugin source does not exist: {source}"),
+            )
+            .with_hint("请确认 vcd 已把 ~/.config/vcd/plugins 挂载到项目容器"));
+        }
+
+        let target_exists = docker_exec_status(container, &["test", "-e", target.as_str()])?
+            || docker_exec_status(container, &["test", "-L", target.as_str()])?;
+
+        if target_exists {
+            let link_target = docker_exec_output(container, &["readlink", target.as_str()]);
+            match link_target {
+                Ok(existing) if existing.trim() == source => {
+                    println!("Plugin already installed: {plugin} -> {target}");
+                    continue;
+                }
+                _ => {
+                    return Err(VcdError::new(
+                        "插件安装失败",
+                        format!("editor plugin path already exists: {target}"),
+                    )
+                    .with_hint(
+                        "该路径不是 vcd 当前 profile 插件的 symlink；请手动检查后删除或重命名",
+                    ));
+                }
+            }
+        }
+
+        docker_exec_checked(
+            container,
+            &["ln", "-s", source.as_str(), target.as_str()],
+            "插件安装失败",
+            "failed to link profile plugin",
+        )?;
+        println!("Installed plugin: {plugin} -> {target}");
+    }
+
+    Ok(())
 }
 
 fn checkout_branch(container: &str, project_path: &str, branch: &BranchPlan) -> Result<()> {
@@ -645,6 +735,46 @@ fn project_path(user: &str, project: &str) -> String {
     format!("/home/{user}/{project}")
 }
 
+fn container_plugin_root(user: &str) -> String {
+    format!("/home/{user}/.config/vcd/plugins")
+}
+
+fn container_plugin_path(user: &str, plugin: &str) -> String {
+    format!("{}/{}", container_plugin_root(user), plugin)
+}
+
+fn editor_plugin_root(user: &str, editor: &str) -> String {
+    format!("/home/{user}/.{editor}/plugins")
+}
+
+fn editor_plugin_args(user: &str, editor: &str, plugins: &[String]) -> Vec<String> {
+    if editor != "claude" {
+        return Vec::new();
+    }
+
+    plugins
+        .iter()
+        .flat_map(|plugin| {
+            [
+                "--plugin-dir".to_string(),
+                container_plugin_path(user, plugin),
+            ]
+        })
+        .collect()
+}
+
+fn host_claude_config(user: &str) -> String {
+    format!("/Users/{user}/.claude.json")
+}
+
+fn container_claude_config(user: &str) -> String {
+    format!("/home/{user}/.claude.json")
+}
+
+fn container_claude_backup_dir(user: &str) -> String {
+    format!("/home/{user}/.claude/backups")
+}
+
 fn container_ssh_file(user: &str, file: &str) -> String {
     format!("/home/{user}/.ssh/{file}")
 }
@@ -671,6 +801,18 @@ fn ssh_file_mount(user: &str, path: &str) -> Result<String> {
         key.display(),
         container_ssh_file(user, &file)
     ))
+}
+
+fn plugin_root_mount(user: &str, path: &str) -> String {
+    format!("{path}:{}:ro", container_plugin_root(user))
+}
+
+fn add_optional_claude_config_mount(args: &mut Vec<String>, user: &str) {
+    let path = host_claude_config(user);
+    if Path::new(&path).is_file() {
+        args.push("-v".to_string());
+        args.push(format!("{}:{}", path, container_claude_config(user)));
+    }
 }
 
 fn add_optional_ssh_mount(args: &mut Vec<String>, user: &str, path: &str) -> Result<()> {
@@ -712,9 +854,26 @@ pub fn ensure_host_ssh_key(ssh_key_path: &str) -> Result<()> {
     }
 }
 
-fn ensure_ssh_mount(request: &ContainerRequest) -> Result<()> {
+fn ensure_host_plugin_root(plugin_root: &str) -> Result<()> {
+    let root = PathBuf::from(plugin_root);
+    if root.is_dir() {
+        Ok(())
+    } else {
+        Err(VcdError::new(
+            "插件目录不存在",
+            format!("plugin directory was not found: {}", root.display()),
+        )
+        .with_hint("请先执行 vcd plugin add <git-url> 添加插件"))
+    }
+}
+
+fn ensure_required_mounts(request: &ContainerRequest) -> Result<()> {
     ensure_host_ssh_key(&request.ssh_key_path)?;
     let expected = container_ssh_file(&request.user, &ssh_key_file_name(&request.ssh_key_path)?);
+    let mut expected_mounts = vec![expected];
+    if request.plugin_root.is_some() {
+        expected_mounts.push(container_plugin_root(&request.user));
+    }
     let output = Command::new("docker")
         .args([
             "container",
@@ -742,21 +901,19 @@ fn ensure_ssh_mount(request: &ContainerRequest) -> Result<()> {
     }
 
     let mounts = String::from_utf8_lossy(&output.stdout);
-    if mounts.lines().any(|line| line == expected) {
-        Ok(())
-    } else {
-        Err(VcdError::new(
-            "容器配置不匹配",
-            format!(
-                "container '{}' does not mount {}",
-                request.name, expected
-            ),
-        )
-        .with_hint(format!(
-            "这是旧容器或 SSH key 配置变更后的容器；如无需要保留的容器内改动，请执行 docker rm -f {} 后重试",
-            request.name
-        )))
+    for expected in expected_mounts {
+        if !mounts.lines().any(|line| line == expected) {
+            return Err(VcdError::new(
+                "容器配置不匹配",
+                format!("container '{}' does not mount {}", request.name, expected),
+            )
+            .with_hint(format!(
+                "这是旧容器或配置变更后的容器；如无需要保留的容器内改动，请执行 docker rm -f {} 后重试",
+                request.name
+            )));
+        }
     }
+    Ok(())
 }
 
 fn container_status(container: &str) -> Result<Option<String>> {
@@ -798,6 +955,64 @@ fn local_branch_exists(container: &str, project_path: &str, branch: &str) -> Res
     )
 }
 
+fn ensure_claude_config(container: &str, user: &str) -> Result<()> {
+    let config = container_claude_config(user);
+    if docker_exec_status(container, &["test", "-f", config.as_str()])? {
+        return Ok(());
+    }
+
+    let Some(backup) = latest_claude_config_backup(container, user)? else {
+        return Err(VcdError::new(
+            "Claude 配置缺失",
+            format!("Claude configuration file not found at: {config}"),
+        )
+        .with_hint(format!(
+            "请确认宿主机 {} 存在，或在 {} 下保留 .claude.json.backup.* 备份",
+            host_claude_config(user),
+            container_claude_backup_dir(user)
+        )));
+    };
+
+    docker_exec_checked(
+        container,
+        &["cp", backup.as_str(), config.as_str()],
+        "Claude 配置恢复失败",
+        "failed to restore Claude config from backup",
+    )?;
+    println!("Restored Claude config: {backup} -> {config}");
+    Ok(())
+}
+
+fn latest_claude_config_backup(container: &str, user: &str) -> Result<Option<String>> {
+    let backup_dir = container_claude_backup_dir(user);
+    if !docker_exec_status(container, &["test", "-d", backup_dir.as_str()])? {
+        return Ok(None);
+    }
+
+    let output = docker_exec_output(
+        container,
+        &[
+            "find",
+            backup_dir.as_str(),
+            "-maxdepth",
+            "1",
+            "-type",
+            "f",
+            "-name",
+            ".claude.json.backup.*",
+        ],
+    )?;
+
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let timestamp = line.rsplit_once(".backup.")?.1.parse::<u128>().ok()?;
+            Some((timestamp, line.to_string()))
+        })
+        .max_by_key(|(timestamp, _)| *timestamp)
+        .map(|(_, path)| path))
+}
+
 fn docker_exec_status(container: &str, command: &[&str]) -> Result<bool> {
     let status = Command::new("docker")
         .arg("exec")
@@ -827,6 +1042,29 @@ fn docker_exec_checked(
     args.push(container);
     args.extend(command.iter().copied());
     docker_checked_interactive(&args, stage, message)
+}
+
+fn docker_exec_output(container: &str, command: &[&str]) -> Result<String> {
+    let output = Command::new("docker")
+        .arg("exec")
+        .arg(container)
+        .args(command)
+        .output()
+        .map_err(|err| {
+            VcdError::new(
+                "容器命令执行失败",
+                format!("failed to execute docker exec: {err}"),
+            )
+        })?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(VcdError::new(
+            "容器命令执行失败",
+            format!("docker exec exited with status {}", output.status),
+        ))
+    }
 }
 
 fn docker_checked(args: &[&str], stage: &'static str, message: &'static str) -> Result<()> {
@@ -1014,6 +1252,25 @@ mod tests {
     #[test]
     fn builds_project_path_under_container_home() {
         assert_eq!(project_path("jack", "project"), "/home/jack/project");
+    }
+
+    #[test]
+    fn builds_claude_plugin_args() {
+        assert_eq!(
+            editor_plugin_args("jack", "claude", &["superpowers".to_string()]),
+            vec![
+                "--plugin-dir".to_string(),
+                "/home/jack/.config/vcd/plugins/superpowers".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_plugin_args_for_codex() {
+        assert_eq!(
+            editor_plugin_args("jack", "codex", &["superpowers".to_string()]),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
